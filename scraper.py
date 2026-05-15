@@ -217,7 +217,7 @@ async def extract_rating(block) -> float:
 # ─────────────────────────────────────────────
 async def scrape_google_maps(search_query: str):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, slow_mo=300)
+        browser = await p.chromium.launch(headless=True, slow_mo=300)
         context = await browser.new_context(
             viewport={'width': 1366, 'height': 900},
             locale='en-US',
