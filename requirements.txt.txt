@@ -1,4 +1,0 @@
-playwright
-pandas
-supabase
-python-dotenv
