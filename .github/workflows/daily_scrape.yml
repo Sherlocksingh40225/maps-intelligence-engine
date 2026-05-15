@@ -1,0 +1,30 @@
+name: Daily Maps Scrape
+
+on:
+  schedule:
+    # This runs at 04:00 UTC (9:30 AM IST) every day
+    - cron: '0 4 * * *'
+  workflow_dispatch: # This adds a "Play" button so you can run it manually
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright pandas supabase python-dotenv
+          npx playwright install chromium --with-deps
+
+      - name: Run Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scraper.py
