@@ -733,13 +733,14 @@ async def scrape_query(page, search_query: str, city: str,
             }
 
             try:
-                # ignore_duplicates=True skips rows where (restaurant_name,
-                # reviewer_name, review_text) already exist, so AI columns
-                # (strategic_tags, urgency_score, recovery_reply, etc.) are
+                # upsert on the natural unique key:
+                # (restaurant_name, reviewer_name, review_text).
+                # Columns absent from `record` (AI fields such as
+                # strategic_tags, urgency_score, recovery_reply) are
+                # left untouched by Supabase on conflict — they are
                 # never overwritten by the scraper.
-                supabase.table("restaurant_reviews").insert(
+                supabase.table("restaurant_reviews").upsert(
                     record,
-                    ignore_duplicates=True,
                     on_conflict="restaurant_name,reviewer_name,review_text"
                 ).execute()
                 totals["db_ok"] += 1
