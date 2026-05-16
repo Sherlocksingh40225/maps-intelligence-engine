@@ -47,8 +47,9 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SCROLL_COUNT    = 15
-SCROLL_PAUSE_MS = 1800
+SCROLL_COUNT       = 15
+SCROLL_PAUSE_MS    = 1800
+RESTAURANTS_LIMIT  = 50   # default cap used by collect_restaurant_urls
 
 # Supabase Hobby Tier: disable vector embeddings above this row count
 ROW_SAFETY_LIMIT = 45_000
