@@ -43,20 +43,162 @@ log = logging.getLogger("scraper")
 
 # ── Config ───────────────────────────────────────────────────────────────────
 load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-TARGET_CITIES      = ["Jhansi", "Bangalore", "Lucknow"]
-RESTAURANTS_LIMIT  = 30
-SCROLL_COUNT       = 15
-SCROLL_PAUSE_MS    = 1800
+SCROLL_COUNT    = 15
+SCROLL_PAUSE_MS = 1800
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
-)
+# Supabase Hobby Tier: disable vector embeddings above this row count
+ROW_SAFETY_LIMIT = 45_000
+
+# Rotating user agents — picked randomly per browser context
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+]
+
+# Micro-market search queries — (query, city, max_restaurants)
+# 40 Jhansi · 40 Lucknow · 50 Bangalore = 130 total
+SEARCH_QUERIES: list[tuple[str, str, int]] = [
+    # ── JHANSI (40 queries, 40 restaurants each) ──────────────────────────
+    ("Best restaurants in Jhansi",               "Jhansi", 40),
+    ("Restaurants in Sadar Bazar Jhansi",        "Jhansi", 40),
+    ("Restaurants in Civil Lines Jhansi",        "Jhansi", 40),
+    ("Restaurants in Sipri Bazar Jhansi",        "Jhansi", 40),
+    ("Restaurants in Cantonment Jhansi",         "Jhansi", 40),
+    ("Restaurants in Gwalior Road Jhansi",       "Jhansi", 40),
+    ("Restaurants in Jhansi Road area",          "Jhansi", 40),
+    ("Cafes in Jhansi",                          "Jhansi", 40),
+    ("Fast food in Jhansi",                      "Jhansi", 40),
+    ("Dhaba in Jhansi",                          "Jhansi", 40),
+    ("Street food in Jhansi",                   "Jhansi", 40),
+    ("Biryani in Jhansi",                        "Jhansi", 40),
+    ("Thali restaurants in Jhansi",              "Jhansi", 40),
+    ("Veg restaurants in Jhansi",                "Jhansi", 40),
+    ("Non veg restaurants in Jhansi",            "Jhansi", 40),
+    ("Pizza in Jhansi",                          "Jhansi", 40),
+    ("Chinese food in Jhansi",                   "Jhansi", 40),
+    ("South Indian food in Jhansi",              "Jhansi", 40),
+    ("Punjabi food in Jhansi",                   "Jhansi", 40),
+    ("Rooftop restaurants Jhansi",               "Jhansi", 40),
+    ("Family restaurants in Jhansi",             "Jhansi", 40),
+    ("Budget restaurants Jhansi",                "Jhansi", 40),
+    ("Fine dining Jhansi",                       "Jhansi", 40),
+    ("Sweets shops in Jhansi",                   "Jhansi", 40),
+    ("Bakery in Jhansi",                         "Jhansi", 40),
+    ("Ice cream parlour Jhansi",                 "Jhansi", 40),
+    ("Juice bars in Jhansi",                     "Jhansi", 40),
+    ("Breakfast places in Jhansi",               "Jhansi", 40),
+    ("Late night food Jhansi",                   "Jhansi", 40),
+    ("Restaurants near Jhansi station",          "Jhansi", 40),
+    ("Restaurants near Jhansi Fort",             "Jhansi", 40),
+    ("Hotel restaurants in Jhansi",              "Jhansi", 40),
+    ("Halal food Jhansi",                        "Jhansi", 40),
+    ("North Indian food Jhansi",                 "Jhansi", 40),
+    ("Mughlai food Jhansi",                      "Jhansi", 40),
+    ("Momos in Jhansi",                          "Jhansi", 40),
+    ("Chaat in Jhansi",                          "Jhansi", 40),
+    ("Bar and restaurant Jhansi",                "Jhansi", 40),
+    ("Paan shops Jhansi",                        "Jhansi", 40),
+    ("Milk sweets Jhansi",                       "Jhansi", 40),
+    # ── LUCKNOW (40 queries, 40 restaurants each) ─────────────────────────
+    ("Best restaurants in Lucknow",              "Lucknow", 40),
+    ("Restaurants in Gomti Nagar Lucknow",       "Lucknow", 40),
+    ("Restaurants in Hazratganj Lucknow",        "Lucknow", 40),
+    ("Restaurants in Aminabad Lucknow",          "Lucknow", 40),
+    ("Restaurants in Alambagh Lucknow",          "Lucknow", 40),
+    ("Restaurants in Aliganj Lucknow",           "Lucknow", 40),
+    ("Restaurants in Indira Nagar Lucknow",      "Lucknow", 40),
+    ("Restaurants in Vikas Nagar Lucknow",       "Lucknow", 40),
+    ("Restaurants in Mahanagar Lucknow",         "Lucknow", 40),
+    ("Restaurants in Chowk Lucknow",             "Lucknow", 40),
+    ("Cafes in Hazratganj Lucknow",              "Lucknow", 40),
+    ("Biryani in Lucknow",                       "Lucknow", 40),
+    ("Tunday Kababi style food Lucknow",         "Lucknow", 40),
+    ("Awadhi cuisine restaurants Lucknow",       "Lucknow", 40),
+    ("Kebab restaurants Lucknow",                "Lucknow", 40),
+    ("Mughlai food Lucknow",                     "Lucknow", 40),
+    ("Street food in Lucknow",                   "Lucknow", 40),
+    ("Chaat in Lucknow",                         "Lucknow", 40),
+    ("Fast food Lucknow",                        "Lucknow", 40),
+    ("Rooftop restaurants Lucknow",              "Lucknow", 40),
+    ("Fine dining Lucknow",                      "Lucknow", 40),
+    ("Budget restaurants Lucknow",               "Lucknow", 40),
+    ("Pizza in Lucknow",                         "Lucknow", 40),
+    ("Chinese food Lucknow",                     "Lucknow", 40),
+    ("South Indian food Lucknow",                "Lucknow", 40),
+    ("Veg restaurants Lucknow",                  "Lucknow", 40),
+    ("Breakfast places Lucknow",                 "Lucknow", 40),
+    ("Bakery Lucknow",                           "Lucknow", 40),
+    ("Ice cream Lucknow",                        "Lucknow", 40),
+    ("Bar and restaurant Lucknow",               "Lucknow", 40),
+    ("Hotel restaurants Lucknow",                "Lucknow", 40),
+    ("Restaurants near Lucknow airport",         "Lucknow", 40),
+    ("Family restaurants Lucknow",               "Lucknow", 40),
+    ("Dhaba Lucknow",                            "Lucknow", 40),
+    ("Halal food Lucknow",                       "Lucknow", 40),
+    ("Sweets shops Lucknow",                     "Lucknow", 40),
+    ("North Indian food Lucknow",                "Lucknow", 40),
+    ("Momos in Lucknow",                         "Lucknow", 40),
+    ("Juice bars Lucknow",                       "Lucknow", 40),
+    ("Late night food Lucknow",                  "Lucknow", 40),
+    # ── BANGALORE (50 queries, 50 restaurants each) ───────────────────────
+    ("Best restaurants in Bangalore",            "Bangalore", 50),
+    ("Restaurants in Indiranagar Bangalore",     "Bangalore", 50),
+    ("Restaurants in Koramangala Bangalore",     "Bangalore", 50),
+    ("Restaurants in Whitefield Bangalore",      "Bangalore", 50),
+    ("Restaurants in HSR Layout Bangalore",      "Bangalore", 50),
+    ("Restaurants in Jayanagar Bangalore",       "Bangalore", 50),
+    ("Restaurants in JP Nagar Bangalore",        "Bangalore", 50),
+    ("Restaurants in BTM Layout Bangalore",      "Bangalore", 50),
+    ("Restaurants in Electronic City Bangalore", "Bangalore", 50),
+    ("Restaurants in MG Road Bangalore",         "Bangalore", 50),
+    ("Restaurants in Church Street Bangalore",   "Bangalore", 50),
+    ("Restaurants in Marathahalli Bangalore",    "Bangalore", 50),
+    ("Restaurants in Bellandur Bangalore",       "Bangalore", 50),
+    ("Restaurants in Sarjapur Road Bangalore",   "Bangalore", 50),
+    ("Restaurants in Yelahanka Bangalore",       "Bangalore", 50),
+    ("Restaurants in Rajajinagar Bangalore",     "Bangalore", 50),
+    ("Restaurants in Malleshwaram Bangalore",    "Bangalore", 50),
+    ("Restaurants in Hebbal Bangalore",          "Bangalore", 50),
+    ("Restaurants in Bannerghatta Road Bangalore","Bangalore", 50),
+    ("Restaurants in Ulsoor Bangalore",          "Bangalore", 50),
+    ("Cafes in Indiranagar Bangalore",           "Bangalore", 50),
+    ("Cafes in Koramangala Bangalore",           "Bangalore", 50),
+    ("Best Biryani in Indiranagar Bangalore",    "Bangalore", 50),
+    ("Best Biryani in Koramangala Bangalore",    "Bangalore", 50),
+    ("South Indian breakfast Bangalore",         "Bangalore", 50),
+    ("Dosa restaurants Bangalore",               "Bangalore", 50),
+    ("North Indian food Bangalore",              "Bangalore", 50),
+    ("Chinese food Bangalore",                   "Bangalore", 50),
+    ("Continental food Bangalore",               "Bangalore", 50),
+    ("Italian food Bangalore",                   "Bangalore", 50),
+    ("Pizza in Bangalore",                       "Bangalore", 50),
+    ("Burger restaurants Bangalore",             "Bangalore", 50),
+    ("Vegan restaurants Bangalore",              "Bangalore", 50),
+    ("Rooftop bars Bangalore",                   "Bangalore", 50),
+    ("Microbreweries Bangalore",                 "Bangalore", 50),
+    ("Fine dining Bangalore",                    "Bangalore", 50),
+    ("Budget restaurants Bangalore",             "Bangalore", 50),
+    ("Street food Bangalore",                    "Bangalore", 50),
+    ("Cloud kitchen Bangalore",                  "Bangalore", 50),
+    ("Breakfast places Bangalore",               "Bangalore", 50),
+    ("Late night restaurants Bangalore",         "Bangalore", 50),
+    ("Seafood restaurants Bangalore",            "Bangalore", 50),
+    ("Sushi restaurants Bangalore",              "Bangalore", 50),
+    ("Thai food Bangalore",                      "Bangalore", 50),
+    ("Lebanese food Bangalore",                  "Bangalore", 50),
+    ("Dessert cafes Bangalore",                  "Bangalore", 50),
+    ("Bakery Bangalore",                         "Bangalore", 50),
+    ("Vegetarian restaurants Bangalore",         "Bangalore", 50),
+    ("Family restaurants Bangalore",             "Bangalore", 50),
+    ("Restaurants near Bangalore airport",       "Bangalore", 50),
+]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,6 +255,59 @@ async def expand_more_buttons(page) -> int:
             pass
     log.info(f"      🖱  Expanded {clicked} 'More' buttons")
     return clicked
+
+
+async def sort_reviews_by_newest(page):
+    """
+    Click the Sort button on the Google Maps reviews panel and
+    select 'Newest' to ensure we capture the freshest reviews first.
+    """
+    try:
+        # The sort button is usually aria-label='Sort reviews'
+        sort_btn = page.locator(
+            'button[aria-label*="Sort"], button[data-value*="sort"]'
+        ).first
+        if await sort_btn.count() > 0 and await sort_btn.is_visible():
+            await sort_btn.click()
+            await page.wait_for_timeout(800)
+            # 'Newest' option in the dropdown
+            newest = page.locator(
+                'li[data-index="1"], div[role="menuitemradio"]:has-text("Newest")'
+            ).first
+            if await newest.count() > 0:
+                await newest.click()
+                await page.wait_for_timeout(1500)
+                log.info("      🗓  Sorted by Newest")
+                return
+        # JS fallback
+        await page.evaluate("""
+            () => {
+                const btns = [...document.querySelectorAll('button')];
+                const sb = btns.find(b => (b.getAttribute('aria-label') || '').toLowerCase().includes('sort'));
+                if (sb) sb.click();
+            }
+        """)
+        await page.wait_for_timeout(600)
+        await page.evaluate("""
+            () => {
+                const opts = [...document.querySelectorAll('li, [role="menuitemradio"]')];
+                const newest = opts.find(o => o.innerText.trim() === 'Newest');
+                if (newest) newest.click();
+            }
+        """)
+        await page.wait_for_timeout(1200)
+        log.info("      🗓  Sort-by-Newest applied (JS fallback)")
+    except Exception as e:
+        log.warning(f"      ⚠  Could not sort by Newest: {e}")
+
+
+def check_row_count() -> int:
+    """Return the current total row count from restaurant_reviews."""
+    try:
+        resp = supabase.table("restaurant_reviews").select("id", count="exact").execute()
+        return resp.count or 0
+    except Exception:
+        return 0
 
 
 async def safe_inner_text(locator) -> str:
@@ -403,11 +598,8 @@ async def click_reviews_tab(page):
 
 # ── Per-city scrape ───────────────────────────────────────────────────────────
 
-async def scrape_city(page, city: str, totals: dict):
-    search_query = f"Best restaurants in {city}"
-    log.info(f"\n{'#'*70}")
-    log.info(f"  🌆  CITY: {city.upper()}  —  {search_query}")
-    log.info(f"{'#'*70}\n")
+async def scrape_query(page, search_query: str, city: str,
+                       max_restaurants: int, totals: dict):
 
     # Search
     try:
@@ -434,8 +626,8 @@ async def scrape_city(page, city: str, totals: dict):
         log.error(f"Result list timeout for {city}: {e}")
         return
 
-    restaurant_urls = await collect_restaurant_urls(page, limit=RESTAURANTS_LIMIT)
-    log.info(f"📋  Collected {len(restaurant_urls)} restaurant URLs for {city}\n")
+    restaurant_urls = await collect_restaurant_urls(page, limit=max_restaurants)
+    log.info(f"  📋  Collected {len(restaurant_urls)} restaurant URLs\n")
 
     for idx, url in enumerate(restaurant_urls):
         log.info(f"\n{'='*60}")
@@ -471,8 +663,9 @@ async def scrape_city(page, city: str, totals: dict):
             f"| status={biz['open_closed_status']} | phone={biz['phone_number']}"
         )
 
-        # Reviews tab
+        # Reviews tab + sort by Newest
         await click_reviews_tab(page)
+        await sort_reviews_by_newest(page)
         try:
             await page.wait_for_selector(
                 'div[data-review-id], div.jJc83c',
@@ -539,8 +732,13 @@ async def scrape_city(page, city: str, totals: dict):
             }
 
             try:
-                supabase.table("restaurant_reviews").upsert(
+                # ignore_duplicates=True skips rows where (restaurant_name,
+                # reviewer_name, review_text) already exist, so AI columns
+                # (strategic_tags, urgency_score, recovery_reply, etc.) are
+                # never overwritten by the scraper.
+                supabase.table("restaurant_reviews").insert(
                     record,
+                    ignore_duplicates=True,
                     on_conflict="restaurant_name,reviewer_name,review_text"
                 ).execute()
                 totals["db_ok"] += 1
@@ -564,45 +762,59 @@ async def scrape_city(page, city: str, totals: dict):
 async def main():
     totals = {"valid": 0, "empty": 0, "db_ok": 0, "db_err": 0, "skipped": 0}
 
+    # Storage safety pre-check
+    current_rows = check_row_count()
+    embeddings_enabled = current_rows < ROW_SAFETY_LIMIT
+    log.info(f"  🗄  Current DB rows : {current_rows:,}")
+    log.info(f"  ⚡  Embeddings : {'ENABLED' if embeddings_enabled else 'DISABLED (>45k row limit)'}")
+    log.info(f"  📄  Loaded {len(SEARCH_QUERIES)} micro-market queries.")
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        context = await browser.new_context(
-            viewport={"width": 1366, "height": 900},
-            locale="en-US",
-            user_agent=USER_AGENT,
-        )
+        for q_idx, (search_query, city, max_restaurants) in enumerate(SEARCH_QUERIES):
+            ua = random.choice(USER_AGENTS)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 900},
+                locale="en-US",
+                user_agent=ua,
+            )
+            await context.add_cookies([{
+                "name": "CONSENT",
+                "value": "YES+cb.20230101-14-p0.en+FX+414",
+                "domain": ".google.com",
+                "path": "/",
+            }])
+            page = await context.new_page()
 
-        # Bypass cookie consent
-        await context.add_cookies([{
-            "name": "CONSENT",
-            "value": "YES+cb.20230101-14-p0.en+FX+414",
-            "domain": ".google.com",
-            "path": "/",
-        }])
+            log.info(f"\n{'#'*70}")
+            log.info(f"  [{q_idx+1}/{len(SEARCH_QUERIES)}] {search_query}  (max {max_restaurants})")
+            log.info(f"{'#'*70}")
 
-        page = await context.new_page()
-
-        for city in TARGET_CITIES:
             try:
-                await scrape_city(page, city, totals)
+                await scrape_query(page, search_query, city, max_restaurants, totals)
             except Exception as e:
-                log.error(f"💥  Fatal error for city '{city}': {e} — continuing to next city.")
+                log.error(f"  💥 Error on '{search_query}': {e}")
+            finally:
+                await browser.close()
 
-        await browser.close()
+            if q_idx < len(SEARCH_QUERIES) - 1:
+                import asyncio as _a; delay = __import__('random').uniform(5.0, 15.0)
+                log.info(f"  ⏱  Sleeping {delay:.1f}s before next query...")
+                await _a.sleep(delay)
 
     # ── Final summary ─────────────────────────────────────────────────────────
     log.info(f"\n{'#'*70}")
-    log.info("✅  ALL CITIES COMPLETE — FINAL VERIFICATION SUMMARY")
+    log.info("✅  ALL QUERIES COMPLETE — FINAL SUMMARY")
     log.info(f"{'#'*70}")
-    log.info(f"  🌆  Cities scraped        : {len(TARGET_CITIES)}")
-    log.info(f"  📊  Valid text reviews    : {totals['valid']}")
-    log.info(f"  📊  Empty reviews         : {totals['empty']}")
-    log.info(f"  🗄️   DB upserts OK         : {totals['db_ok']}")
-    log.info(f"  🗄️   DB upserts FAILED     : {totals['db_err']}")
-    log.info(f"  ⚠️   Restaurants skipped   : {totals['skipped']}")
+    log.info(f"  📋  Queries run       : {len(SEARCH_QUERIES)}")
+    log.info(f"  📊  Valid reviews     : {totals['valid']}")
+    log.info(f"  📊  Empty reviews     : {totals['empty']}")
+    log.info(f"  🗄   DB inserts OK    : {totals['db_ok']}")
+    log.info(f"  🗄   DB FAILED        : {totals['db_err']}")
+    log.info(f"  ⚠️   Skipped          : {totals['skipped']}")
     log.info(f"{'#'*70}\n")
 
 
