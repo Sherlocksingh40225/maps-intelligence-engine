@@ -11,7 +11,7 @@ Features:
   • headless=True + realistic User-Agent
   • Random 2–4 s delay between restaurants (bot-evasion)
   • Fault-tolerant: failed restaurants are logged & skipped
-  • Supabase upsert on (restaurant_name, reviewer_name, review_text)
+  • Supabase upsert on (restaurant_name, reviewer_name, google_review_id)
 """
 
 import os
@@ -21,7 +21,8 @@ import random
 import sys
 import io
 import logging
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime, timezone, timedelta
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from supabase import create_client, Client
@@ -477,13 +478,202 @@ async def extract_rating(block) -> int:
     return 0
 
 
-async def extract_review_date(block) -> str | None:
-    """Relative date like '3 months ago', 'a week ago'."""
-    for sel in [".rsqaWe", "span.rsqaWe", ".dehysf", "span[class*='dehysf']"]:
-        t = await safe_inner_text(block.locator(sel))
-        if t and "ago" in t.lower():
-            return t
+def parse_relative_date(text: str, base_date: datetime = None) -> datetime | None:
+    if not text:
+        return None
+    if not base_date:
+        base_date = datetime.now(timezone.utc)
+    
+    text = text.lower().strip()
+    
+    # Check for "just now", "now", "today"
+    if text in ["just now", "now", "today", "ahora", "ahora mismo", "अभी", "आज"]:
+        return base_date
+        
+    qty = 1
+    num_match = re.search(r'\d+', text)
+    if num_match:
+        qty = int(num_match.group(0))
+    elif re.search(r'\b(a|an|one|un|una|एक)\b', text):
+        qty = 1
+        
+    # Define unit mappings
+    # Year
+    if re.search(r'year|año|वर्ष|साल', text):
+        return base_date - timedelta(days=365 * qty)
+    # Month
+    elif re.search(r'month|mes|महीना|महीने', text):
+        return base_date - timedelta(days=30 * qty)
+    # Week
+    elif re.search(r'week|semana|हफ़्त|सप्ताह', text):
+        return base_date - timedelta(weeks=qty)
+    # Day
+    elif re.search(r'day|d\u00eda|दिन', text):
+        return base_date - timedelta(days=qty)
+    # Hour
+    elif re.search(r'hour|hora|घंट', text):
+        return base_date - timedelta(hours=qty)
+    # Minute
+    elif re.search(r'minute|minuto|मिनट', text):
+        return base_date - timedelta(minutes=qty)
+        
     return None
+
+
+async def extract_review_date(block) -> dict:
+    """
+    Extracts relative and absolute date from a review card DOM block.
+
+    Strategy (in order):
+      1. Try known CSS selectors for the date span (.rsqaWe, .dehysf, etc.)
+      2. If all selectors miss, run a JS scan of the full card for text
+         matching a relative-time pattern (e.g. "2 years ago", "a week ago")
+      3. Try parsing absolute title attribute (dom_absolute)
+      4. Try parsing relative text (relative_parsed)
+      5. Log a compact warning snippet and return source="none"
+
+    Returns:
+        dict: {
+            "raw": str | None,
+            "published_at": str | None,
+            "source": "dom_absolute" | "relative_parsed" | "none"
+        }
+    """
+    from dateutil.parser import parse as parse_absolute
+    from datetime import timedelta
+
+    relative_text = None
+    absolute_title = None
+
+    # ── Pass 1: Known CSS selectors ───────────────────────────────────────────
+    # Covers .rsqaWe (standard), .dehysf (alt locale), xRkPPb/y3Ibjb (mobile
+    # variants observed on Chulhewala / Jhansi Hotel), and aria-label fallbacks.
+    SELECTORS = [
+        ".rsqaWe",
+        "span.rsqaWe",
+        ".dehysf",
+        "span[class*='dehysf']",
+        "span[class*='xRkPPb']",
+        "span[class*='y3Ibjb']",
+        "span[aria-label*='ago']",
+        "span[aria-label*='year']",
+        "span[aria-label*='month']",
+        "span[aria-label*='week']",
+        "span[aria-label*='day']",
+    ]
+
+    for sel in SELECTORS:
+        loc = block.locator(sel)
+        try:
+            count = await loc.count()
+            if count > 0:
+                text_candidate = await safe_inner_text(loc)
+                aria_candidate = await safe_attr(loc, "aria-label")
+                title_candidate = await safe_attr(loc, "title")
+
+                # Validate the text is actually a time expression before accepting
+                TIME_RE = re.compile(
+                    r'(\d+\s*(second|minute|hour|day|week|month|year)s?\s*ago|'
+                    r'just now|today|yesterday|edited)',
+                    re.I
+                )
+
+                accepted = None
+                if text_candidate and TIME_RE.search(text_candidate):
+                    accepted = text_candidate.strip()
+                elif aria_candidate and TIME_RE.search(aria_candidate):
+                    accepted = aria_candidate.strip()
+
+                if accepted:
+                    relative_text = accepted
+                    # Prefer aria-label as absolute if it has a year digit
+                    if aria_candidate and re.search(r'\d{4}', aria_candidate):
+                        absolute_title = aria_candidate.strip()
+                    else:
+                        absolute_title = title_candidate.strip() if title_candidate else None
+                    break
+        except Exception:
+            pass
+
+    # ── Pass 2: JS full-card text-pattern scan ────────────────────────────────
+    # Walks every span/div in the card looking for short text nodes that match
+    # a relative-time pattern. Catches class-name variants we haven't seen yet.
+    if not relative_text:
+        try:
+            found = await block.evaluate("""
+                el => {
+                    const TIME_RE = /(\\d+\\s*(second|minute|hour|day|week|month|year)s?\\s*ago|just now|today|yesterday|edited\\s+\\d+)/i;
+                    for (const node of el.querySelectorAll('span, div')) {
+                        const t = (node.innerText || node.textContent || '').trim();
+                        if (t.length > 0 && t.length < 80 && TIME_RE.test(t)) {
+                            return {
+                                text: t,
+                                title: node.getAttribute('title') || '',
+                                aria: node.getAttribute('aria-label') || '',
+                                html: node.outerHTML.substring(0, 300)
+                            };
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if found and found.get("text"):
+                relative_text = found["text"].strip()
+                aria_val = (found.get("aria") or "").strip()
+                title_val = (found.get("title") or "").strip()
+                if aria_val and re.search(r'\d{4}', aria_val):
+                    absolute_title = aria_val
+                elif title_val:
+                    absolute_title = title_val
+                log.debug(f"[DATE:js_scan] Found '{relative_text}' | HTML: {found.get('html', '')[:120]}")
+        except Exception as e:
+            log.debug(f"[DATE:js_scan] error: {e}")
+
+    # ── Normalize ─────────────────────────────────────────────────────────────
+    relative_text = relative_text.strip() if relative_text else None
+    absolute_title = absolute_title.strip() if absolute_title else None
+
+    # ── Pass 3: Parse absolute title (dom_absolute) ───────────────────────────
+    if absolute_title:
+        try:
+            dt = parse_absolute(absolute_title)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return {
+                "raw": relative_text or absolute_title,
+                "published_at": dt.isoformat(),
+                "source": "dom_absolute"
+            }
+        except Exception as err:
+            log.debug(f"[DATE:dom_absolute] Failed parsing '{absolute_title}': {err}")
+
+    # ── Pass 4: Parse relative text (relative_parsed) ─────────────────────────
+    if relative_text:
+        try:
+            dt = parse_relative_date(relative_text)
+            if dt:
+                return {
+                    "raw": relative_text,
+                    "published_at": dt.isoformat(),
+                    "source": "relative_parsed"
+                }
+        except Exception as err:
+            log.debug(f"[DATE:relative] Failed parsing '{relative_text}': {err}")
+
+    # ── Pass 5: Complete miss — log snippet for future debugging ──────────────
+    if not relative_text:
+        try:
+            snippet = await block.evaluate("el => el.innerHTML.substring(0, 400)")
+            log.warning(f"[DATE:miss] No date found. HTML snippet: {snippet}")
+        except Exception:
+            pass
+
+    return {
+        "raw": relative_text or absolute_title,
+        "published_at": None,
+        "source": "none"
+    }
+
 
 
 async def extract_local_guide_info(block) -> tuple[bool, int | None]:
@@ -703,11 +893,21 @@ async def scrape_query(page, search_query: str, city: str,
             restaurant_valid += 1
             totals["valid"] += 1
 
+            google_review_id  = await block.get_attribute("data-review-id")
             reviewer_name     = await extract_reviewer_name(block)
             rating            = await extract_rating(block)
-            review_date       = await extract_review_date(block)
+            date_info         = await extract_review_date(block)
             is_local_guide, reviewer_review_count = await extract_local_guide_info(block)
             owner_response    = await extract_owner_response(block)
+
+            # Strict duplicate prevention: check and resolve null/empty google_review_id
+            if google_review_id:
+                log.info(f"      - ID (native_google_id): {google_review_id} | Name: {reviewer_name}")
+            else:
+                log.warning(f"      - ID (extraction_failed) for Name: {reviewer_name}. Generating fallback...")
+                fallback_src = f"{restaurant_name}|{reviewer_name}|{review_text}"
+                google_review_id = hashlib.md5(fallback_src.encode("utf-8")).hexdigest()
+                log.info(f"      - ID (fallback_generated): {google_review_id} | Name: {reviewer_name}")
 
             record = {
                 # Business
@@ -721,7 +921,11 @@ async def scrape_query(page, search_query: str, city: str,
                 "reviewer_name":      reviewer_name,
                 "rating":             rating if rating > 0 else None,
                 "review_text":        review_text,
-                "review_date":        review_date,
+                "google_review_id":   google_review_id,
+                "review_date":        date_info["raw"],
+                "review_published_raw": date_info["raw"],
+                "review_published_at": date_info["published_at"],
+                "review_published_source": date_info["source"],
                 # Reviewer intelligence
                 "is_local_guide":     is_local_guide,
                 "reviewer_review_count": reviewer_review_count,
@@ -732,16 +936,18 @@ async def scrape_query(page, search_query: str, city: str,
                 "scraped_at":         datetime.now(timezone.utc).isoformat(),
             }
 
+            conflict_target = "restaurant_name,reviewer_name,google_review_id"
             try:
-                # upsert on the natural unique key:
-                # (restaurant_name, reviewer_name, review_text).
+                # upsert on the stable unique key:
+                # (restaurant_name, reviewer_name, google_review_id).
                 # Columns absent from `record` (AI fields such as
                 # strategic_tags, urgency_score, recovery_reply) are
                 # left untouched by Supabase on conflict — they are
                 # never overwritten by the scraper.
+                print(f"UPSERT TARGET: {conflict_target}")
                 supabase.table("restaurant_reviews").upsert(
                     record,
-                    on_conflict="restaurant_name,reviewer_name,review_text"
+                    on_conflict=conflict_target
                 ).execute()
                 totals["db_ok"] += 1
             except Exception as db_err:
